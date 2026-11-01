@@ -89,6 +89,9 @@ import { validateCopilotAppPath } from '../../lib/copilot-app'
 interface IPreferencesProps {
   readonly dispatcher: Dispatcher
   readonly accounts: ReadonlyArray<Account>
+  readonly parkedAccounts: ReadonlyArray<Account>
+  readonly syncWithGitHubCLI: boolean
+  readonly desktopProfile: string | null
   readonly repository: Repository | null
   readonly onDismissed: () => void
   readonly useWindowsOpenSSH: boolean
@@ -511,6 +514,21 @@ export class Preferences extends React.Component<
     this.props.dispatcher.removeAccount(account)
   }
 
+  private onSwitchAccount = (account: Account) => {
+    this.props.dispatcher.switchAccount(account).catch(e => {
+      log.error(`Unable to switch to account ${account.login}`, e)
+      this.props.dispatcher.postError(e)
+    })
+  }
+
+  private onLogoutParked = (account: Account) => {
+    this.props.dispatcher.removeParkedAccount(account)
+  }
+
+  private onSyncWithGitHubCLIChanged = (enabled: boolean) => {
+    this.props.dispatcher.setSyncWithGitHubCLI(enabled)
+  }
+
   private renderDisallowedCharactersError() {
     const message = this.state.disallowedCharactersMessage
     if (message != null) {
@@ -547,9 +565,15 @@ export class Preferences extends React.Component<
         View = (
           <Accounts
             accounts={this.props.accounts}
+            parkedAccounts={this.props.parkedAccounts}
+            syncWithGitHubCLI={this.props.syncWithGitHubCLI}
+            desktopProfile={this.props.desktopProfile}
             onDotComSignIn={this.onDotComSignIn}
             onEnterpriseSignIn={this.onEnterpriseSignIn}
             onLogout={this.onLogout}
+            onSwitchAccount={this.onSwitchAccount}
+            onLogoutParked={this.onLogoutParked}
+            onSyncWithGitHubCLIChanged={this.onSyncWithGitHubCLIChanged}
           />
         )
         break

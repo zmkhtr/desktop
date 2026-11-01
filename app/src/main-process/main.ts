@@ -1,3 +1,4 @@
+import './install-profile'
 import '../lib/logging/main/install'
 
 import {

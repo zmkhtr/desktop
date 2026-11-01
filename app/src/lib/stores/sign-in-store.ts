@@ -280,14 +280,9 @@ export class SignInStore extends TypedBaseStore<SignInState | null> {
     const authenticatingState = { ...currentState, loading: true }
     this.setState(authenticatingState)
 
-    if (currentState.kind === SignInStep.ExistingAccountWarning) {
-      const { existingAccount } = currentState
-      // Try to avoid emitting an error out of AccountsStore if the account
-      // is already gone.
-      if (this.accounts.find(x => x.endpoint === existingAccount.endpoint)) {
-        await this.accountStore.removeAccount(existingAccount)
-      }
-    }
+    // An existing account for the endpoint isn't signed out: if a different
+    // account signs in, the AccountsStore parks the existing one so it can be
+    // switched back to. Signing into the same account replaces its credential.
 
     const shortLived = await shouldRequestShortLivedTokens(
       currentState.endpoint

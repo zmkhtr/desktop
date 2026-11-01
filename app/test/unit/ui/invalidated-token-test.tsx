@@ -113,6 +113,12 @@ describe('Session recovery dialog', () => {
         onDotComSignIn={() => signIns++}
         onEnterpriseSignIn={() => assert.fail('Unexpected Enterprise sign-in')}
         onLogout={() => assert.fail('Account should already be signed out')}
+        parkedAccounts={[]}
+        syncWithGitHubCLI={false}
+        desktopProfile={null}
+        onSwitchAccount={() => assert.fail('Unexpected account switch')}
+        onLogoutParked={() => assert.fail('Unexpected parked sign-out')}
+        onSyncWithGitHubCLIChanged={() => assert.fail('Unexpected sync change')}
       />
     )
     assert.equal(screen.queryByText('Octocat'), null)

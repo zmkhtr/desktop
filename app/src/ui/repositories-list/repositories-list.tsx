@@ -11,6 +11,7 @@ import {
 import { IFilterListGroup } from '../lib/filter-list'
 import { IMatches } from '../../lib/fuzzy-find'
 import { ILocalRepositoryState, Repository } from '../../models/repository'
+import { Account } from '../../models/account'
 import { Dispatcher } from '../dispatcher'
 import { Button } from '../lib/button'
 import { Octicon } from '../octicons'
@@ -75,6 +76,17 @@ interface IRepositoriesListProps {
   readonly filterText: string
 
   readonly dispatcher: Dispatcher
+
+  /** Get the signed-in accounts a repository can be moved to. */
+  readonly getMoveToAccounts?: (
+    repository: Repository
+  ) => ReadonlyArray<Account>
+
+  /** Called to move a repository to another signed-in account. */
+  readonly onMoveRepositoryToAccount?: (
+    repository: Repository,
+    account: Account
+  ) => void
 }
 
 interface IRepositoriesListState {
@@ -306,6 +318,11 @@ export class RepositoriesList extends React.Component<
         : undefined,
       repository: item.repository,
       shellLabel: this.props.shellLabel,
+      moveToAccounts:
+        item.repository instanceof Repository
+          ? this.props.getMoveToAccounts?.(item.repository)
+          : undefined,
+      onMoveToAccount: this.props.onMoveRepositoryToAccount,
     })
 
     showContextualMenu(items)

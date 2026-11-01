@@ -195,6 +195,25 @@ export class CredentialSessions {
   }
 
   /**
+   * Retire the endpoint's session but keep its stored credential.
+   *
+   * Waits for an in-flight renewal so the rotated credential is saved before
+   * the session stops, otherwise the stored refresh token could already have
+   * been consumed and the account could not be restored later.
+   */
+  public async park(endpoint: string): Promise<void> {
+    const session = this.sessionsByEndpoint.get(endpoint)
+    if (session?.refreshing !== undefined) {
+      await session.refreshing.catch(() => {})
+    }
+    await this.write(endpoint, async () => {
+      if (this.sessionsByEndpoint.get(endpoint) === session) {
+        this.retireSession(endpoint)
+      }
+    })
+  }
+
+  /**
    * Delete the account's stored credential after any pending write.
    *
    * Skipped if a later sign-in with the same login has been installed since:

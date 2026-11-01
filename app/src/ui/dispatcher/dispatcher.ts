@@ -1266,6 +1266,29 @@ export class Dispatcher {
   }
 
   /**
+   * Make a signed-in account the active account for its endpoint. The
+   * previously active account stays signed in.
+   */
+  public switchAccount(account: Account): Promise<void> {
+    return this.appStore._switchAccount(account)
+  }
+
+  /** Move a repository to another signed-in account. */
+  public moveRepositoryToAccount(repository: Repository, account: Account) {
+    this.appStore._moveRepositoryToAccount(repository, account)
+  }
+
+  /** Sign out of an account which isn't currently active. */
+  public removeParkedAccount(account: Account): Promise<void> {
+    return this.appStore._removeParkedAccount(account)
+  }
+
+  /** Enable or disable syncing the active account with the GitHub CLI. */
+  public setSyncWithGitHubCLI(enabled: boolean) {
+    this.appStore._setSyncWithGitHubCLI(enabled)
+  }
+
+  /**
    * Ask the dispatcher to apply a transformation function to the current
    * state of the application menu.
    *

@@ -56,6 +56,7 @@ import {
   BranchDropdown,
   WorktreeDropdown,
   RevertProgress,
+  AccountSwitcher,
 } from './toolbar'
 import { iconForRepository, OcticonSymbol } from './octicons'
 import * as octicons from './octicons/octicons.generated'
@@ -177,6 +178,7 @@ import { PullRequestReview } from './notifications/pull-request-review'
 import { getRepositoryType } from '../lib/git'
 import { SSHUserPassword } from './ssh/ssh-user-password'
 import { showContextualMenu } from '../lib/menu-item'
+import { getRepositoryOwner } from '../lib/repository-accounts'
 import { UnreachableCommitsDialog } from './history/unreachable-commits-dialog'
 import { OpenPullRequestDialog } from './open-pull-request/open-pull-request-dialog'
 import { sendNonFatalException } from '../lib/helpers/non-fatal-exception'
@@ -1737,6 +1739,9 @@ export class App extends React.Component<IAppProps, IAppState> {
             initialSelectedTab={popup.initialSelectedTab}
             dispatcher={this.props.dispatcher}
             accounts={this.state.accounts}
+            parkedAccounts={this.state.parkedAccounts}
+            syncWithGitHubCLI={this.state.syncWithGitHubCLI}
+            desktopProfile={this.state.desktopProfile}
             confirmRepositoryRemoval={
               this.state.askForConfirmationOnRepositoryRemoval
             }
@@ -3388,7 +3393,8 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     const { useCustomShell, selectedShell } = this.state
     const filterText = this.state.repositoryFilterText
-    const repositories = this.state.repositories
+    // Only the repositories belonging to the active accounts are listed.
+    const repositories = this.state.visibleRepositories
     return (
       <RepositoriesList
         filterText={filterText}
@@ -3409,8 +3415,28 @@ export class App extends React.Component<IAppProps, IAppState> {
         externalEditorLabel={this.externalEditorLabel}
         shellLabel={useCustomShell ? undefined : selectedShell}
         dispatcher={this.props.dispatcher}
+        getMoveToAccounts={this.getMoveToAccounts}
+        onMoveRepositoryToAccount={this.onMoveRepositoryToAccount}
       />
     )
+  }
+
+  /** Other signed-in accounts a repository can be moved to. */
+  private getMoveToAccounts = (repository: Repository) => {
+    const { accounts, parkedAccounts, repositoryOwners } = this.state
+    const all = [...accounts, ...parkedAccounts]
+    if (all.length < 2) {
+      return []
+    }
+    const owner = getRepositoryOwner(repository, repositoryOwners, all)
+    return all.filter(a => a !== owner)
+  }
+
+  private onMoveRepositoryToAccount = (
+    repository: Repository,
+    account: Account
+  ) => {
+    this.props.dispatcher.moveRepositoryToAccount(repository, account)
   }
 
   private viewOnGitHub = (
@@ -3518,7 +3544,7 @@ export class App extends React.Component<IAppProps, IAppState> {
       const alias = repository instanceof Repository ? repository.alias : null
       icon = iconForRepository(repository)
       title = alias ?? repository.name
-    } else if (this.state.repositories.length > 0) {
+    } else if (this.state.visibleRepositories.length > 0) {
       icon = octicons.repo
       title = __DARWIN__ ? 'Select a Repository' : 'Select a repository'
     } else {
@@ -3926,6 +3952,31 @@ export class App extends React.Component<IAppProps, IAppState> {
     this.props.dispatcher.clearBanner()
   }
 
+  private renderAccountSwitcher() {
+    return (
+      <AccountSwitcher
+        accounts={this.state.accounts}
+        parkedAccounts={this.state.parkedAccounts}
+        onSwitchAccount={this.onSwitchAccount}
+        onManageAccounts={this.onManageAccounts}
+      />
+    )
+  }
+
+  private onSwitchAccount = (account: Account) => {
+    this.props.dispatcher.switchAccount(account).catch(e => {
+      log.error(`Unable to switch to account ${account.login}`, e)
+      this.props.dispatcher.postError(e)
+    })
+  }
+
+  private onManageAccounts = () => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.Preferences,
+      initialSelectedTab: PreferencesTab.Accounts,
+    })
+  }
+
   private renderToolbar() {
     /**
      * No toolbar if we're in the blank slate view.
@@ -3938,6 +3989,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     return (
       <Toolbar id="desktop-app-toolbar">
+        {this.renderAccountSwitcher()}
         <div className="sidebar-section" style={{ width }}>
           {this.renderRepositoryToolbarButton()}
         </div>
@@ -4145,7 +4197,9 @@ export class App extends React.Component<IAppProps, IAppState> {
   }
 
   private inNoRepositoriesViewState() {
-    return this.state.repositories.length === 0 || this.isTutorialPaused()
+    return (
+      this.state.visibleRepositories.length === 0 || this.isTutorialPaused()
+    )
   }
 
   private isTutorialPaused() {
