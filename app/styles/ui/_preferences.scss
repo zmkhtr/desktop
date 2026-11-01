@@ -72,6 +72,24 @@
   }
 
   .accounts-tab {
+    .account-actions {
+      display: flex;
+      gap: var(--spacing-half);
+      align-self: center;
+    }
+
+    .active-account-badge {
+      margin-left: var(--spacing-half);
+      padding: 0 var(--spacing-half);
+      border-radius: var(--border-radius);
+      border: var(--base-border);
+      font-size: var(--font-size-xs);
+    }
+
+    .github-cli-sync {
+      margin-top: var(--spacing);
+    }
+
     .account-info {
       .user-info-container {
         display: flex;

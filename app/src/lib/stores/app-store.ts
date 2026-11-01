@@ -292,6 +292,15 @@ import {
   setObject,
   getFloatNumber,
 } from '../local-storage'
+import {
+  GitHubCLIHostsWatcher,
+  IGitHubCLIHost,
+  getAccountsToActivateFromGitHubCLI,
+  getGitHubCLISwitchForAccount,
+  readGitHubCLIHosts,
+  switchGitHubCLIAccount,
+} from '../gh-cli'
+import { getDesktopProfile } from '../desktop-profile'
 import { ExternalEditorError, suggestedExternalEditor } from '../editors/shared'
 import {
   CopilotAppError,
@@ -453,6 +462,8 @@ import type { Model } from '../copilot/types'
 
 const LastSelectedRepositoryIDKey = 'last-selected-repository-id'
 
+const syncWithGitHubCLIKey = 'sync-active-account-with-github-cli'
+
 /**
  * Upper bound on how many pull requests we'll resolve (across both sides)
  * when gathering Copilot conflict-resolution context. Caps best-effort API
@@ -598,6 +609,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private readonly gitStoreCache: GitStoreCache
 
   private accounts: ReadonlyArray<Account> = new Array<Account>()
+  private parkedAccounts: ReadonlyArray<Account> = new Array<Account>()
+  private syncWithGitHubCLI = false
+  private gitHubCLIWatcher: GitHubCLIHostsWatcher | null = null
   private repositories: ReadonlyArray<Repository> = new Array<Repository>()
   private recentRepositories: ReadonlyArray<number> = new Array<number>()
 
@@ -1028,6 +1042,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.accountsStore.onDidUpdate(accounts => {
       this.accounts = accounts
+      this.parkedAccounts = this.accountsStore.getCachedParkedAccounts()
       this.statsStore.setUsesShortLivedToken(
         accounts.some(account => this.accountsStore.isRefreshable(account))
       )
@@ -1269,6 +1284,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     return {
       accounts: this.accounts,
+      parkedAccounts: this.parkedAccounts,
+      syncWithGitHubCLI: this.syncWithGitHubCLI,
+      desktopProfile: getDesktopProfile(),
       repositories,
       recentRepositories: this.recentRepositories,
       localRepositoryStateLookup: this.localRepositoryStateLookup,
@@ -2423,8 +2441,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
   /** Load the initial state for the app. */
   public async loadInitialState() {
-    const [accounts, repositories] = await Promise.all([
+    const [accounts, parkedAccounts, repositories] = await Promise.all([
       this.accountsStore.getAll(),
+      this.accountsStore.getParkedAccounts(),
       this.repositoriesStore.getAll(),
     ])
 
@@ -2436,7 +2455,9 @@ export class AppStore extends TypedBaseStore<IAppState> {
     })
 
     this.accounts = accounts
+    this.parkedAccounts = parkedAccounts
     this.repositories = repositories
+    this._setSyncWithGitHubCLI(getBoolean(syncWithGitHubCLIKey, false))
     this.statsStore.setUsesShortLivedToken(
       accounts.some(account => this.accountsStore.isRefreshable(account))
     )
@@ -8195,8 +8216,97 @@ export class AppStore extends TypedBaseStore<IAppState> {
     }
   }
 
+  /**
+   * Make a signed-in account the active account for its endpoint, parking
+   * the account that was active.
+   *
+   * This shouldn't be called directly. See `Dispatcher`.
+   */
+  public async _switchAccount(account: Account): Promise<void> {
+    const active = await this.accountsStore.switchToAccount(account)
+    if (this.syncWithGitHubCLI) {
+      await this.switchGitHubCLIToAccount(active)
+    }
+  }
+
+  /**
+   * Sign out of an account which isn't active.
+   *
+   * This shouldn't be called directly. See `Dispatcher`.
+   */
+  public async _removeParkedAccount(account: Account): Promise<void> {
+    log.info(`[AppStore] removing parked account ${account.login}`)
+    const removed = await this.accountsStore.removeParkedAccount(account)
+    if (removed?.token) {
+      await deleteToken(removed)
+    }
+  }
+
+  /**
+   * Enable or disable keeping the active accounts in sync with the GitHub
+   * CLI (`gh`). When enabled, the accounts active in `gh` are applied first.
+   *
+   * This shouldn't be called directly. See `Dispatcher`.
+   */
+  public _setSyncWithGitHubCLI(enabled: boolean) {
+    setBoolean(syncWithGitHubCLIKey, enabled)
+    this.syncWithGitHubCLI = enabled
+    this.gitHubCLIWatcher?.dispose()
+    this.gitHubCLIWatcher = null
+    if (enabled) {
+      this.gitHubCLIWatcher = new GitHubCLIHostsWatcher(
+        this.onGitHubCLIHostsChanged
+      )
+      this.gitHubCLIWatcher.scheduleRead()
+    }
+    this.emitUpdate()
+  }
+
+  /** Follow account switches made in `gh` (i.e. `gh auth switch`). */
+  private onGitHubCLIHostsChanged = async (
+    hosts: ReadonlyArray<IGitHubCLIHost>
+  ) => {
+    const toActivate = getAccountsToActivateFromGitHubCLI(
+      hosts,
+      this.accounts,
+      this.parkedAccounts
+    )
+    for (const account of toActivate) {
+      try {
+        log.info(
+          `[AppStore] switching to ${account.login} to match the GitHub CLI`
+        )
+        await this.accountsStore.switchToAccount(account)
+      } catch (e) {
+        log.warn(`Unable to switch to ${account.login} from GitHub CLI`, e)
+      }
+    }
+  }
+
+  /** Make the account active in `gh` too, if `gh` is signed into it. */
+  private async switchGitHubCLIToAccount(account: Account) {
+    try {
+      const hosts = await readGitHubCLIHosts()
+      const change = getGitHubCLISwitchForAccount(hosts, account)
+      if (change !== null) {
+        log.info(`[AppStore] switching GitHub CLI to ${change.login}`)
+        await switchGitHubCLIAccount(change)
+      }
+    } catch (e) {
+      log.warn('Unable to switch GitHub CLI account', e)
+      this.emitError(
+        new Error(
+          `Switched to @${account.login}, but the GitHub CLI could not be switched: ${e}`
+        )
+      )
+    }
+  }
+
   private onDidAuthenticate(account: Account): void {
     log.info(`[AppStore] signed in as ${account.login} (${account.name})`)
+    if (this.syncWithGitHubCLI) {
+      void this.switchGitHubCLIToAccount(account)
+    }
     // If we're in the welcome flow and a user signs in we want to trigger
     // a refresh of the repositories available for cloning straight away
     // in order to have the list of repositories ready for them when they

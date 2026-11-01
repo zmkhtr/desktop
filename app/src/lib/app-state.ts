@@ -93,6 +93,16 @@ export type PossibleSelections =
 export interface IAppState {
   readonly accounts: ReadonlyArray<Account>
   /**
+   * Accounts which are signed in but not active for their endpoint. Only one
+   * account per endpoint is active at a time; these can be switched to
+   * without signing in again.
+   */
+  readonly parkedAccounts: ReadonlyArray<Account>
+  /** Whether the active accounts are kept in sync with the GitHub CLI. */
+  readonly syncWithGitHubCLI: boolean
+  /** The name of the profile this instance runs as, null for the default. */
+  readonly desktopProfile: string | null
+  /**
    * The current list of repositories tracked in the application
    */
   readonly repositories: ReadonlyArray<Repository | CloningRepository>

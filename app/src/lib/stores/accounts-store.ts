@@ -32,6 +32,13 @@ const sortAccounts = (accounts: ReadonlyArray<Account>) =>
     )
     .map(([account]) => account)
 
+/** The data store key for signed-in accounts which aren't active. */
+const parkedUsersKey = 'parkedUsers'
+
+/** Whether two accounts are the same login on the same endpoint. */
+const isSameLogin = (x: Account, y: Account) =>
+  x.endpoint === y.endpoint && x.login.toLowerCase() === y.login.toLowerCase()
+
 /** The data-only interface for storage. */
 interface IEmail {
   readonly email: string
@@ -79,6 +86,12 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   private secureStore: ISecureStore
 
   private accounts: ReadonlyArray<Account> = []
+  /**
+   * Signed-in accounts that are not active for their endpoint. Their
+   * credentials stay in secure storage so they can be switched to without
+   * signing in again. Kept without tokens.
+   */
+  private parkedAccounts: ReadonlyArray<Account> = []
   private readonly credentials: CredentialSessions
 
   /** A promise that will resolve when the accounts have been loaded. */
@@ -117,6 +130,112 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     await this.loadingPromise
 
     return this.accounts.slice()
+  }
+
+  /**
+   * Get the signed-in accounts which are not currently active.
+   *
+   * Only one account per endpoint is active (used for API and Git
+   * operations); the others are parked until switched to.
+   */
+  public async getParkedAccounts(): Promise<ReadonlyArray<Account>> {
+    await this.loadingPromise
+    return this.parkedAccounts.slice()
+  }
+
+  /** The parked accounts as currently known, without waiting for loading. */
+  public getCachedParkedAccounts(): ReadonlyArray<Account> {
+    return this.parkedAccounts
+  }
+
+  /**
+   * Make a parked account the active account for its endpoint.
+   *
+   * The previously active account for that endpoint (if any) is parked; its
+   * stored credential is kept. Returns the newly active account, or throws if
+   * the parked account's credential can no longer be found, in which case the
+   * account is forgotten and has to be signed in again.
+   */
+  public async switchToAccount(account: Account): Promise<Account> {
+    await this.loadingPromise
+    const target = this.parkedAccounts.find(a => isSameLogin(a, account))
+    if (target === undefined) {
+      const active = this.accounts.find(a => isSameLogin(a, account))
+      if (active !== undefined) {
+        return active
+      }
+      throw new Error(`The account @${account.login} is not signed in.`)
+    }
+
+    const key = getKeyForAccount(target)
+    const stored = await this.secureStore.getItem(key, target.login)
+    const credential = deserializeAccountCredential(stored)
+    if (credential === null) {
+      this.parkedAccounts = this.parkedAccounts.filter(a => a !== target)
+      this.save()
+      if (stored !== null) {
+        await this.secureStore.deleteItem(key, target.login).catch(() => {})
+      }
+      throw new AccountRequiresSignInError()
+    }
+
+    const previous = this.accounts.find(a => a.endpoint === target.endpoint)
+    if (previous !== undefined) {
+      await this.credentials.park(previous.endpoint)
+    }
+
+    // The account list may have changed while waiting on storage.
+    const current = this.accounts.find(a => a.endpoint === target.endpoint)
+    const restored = this.credentials.restore(
+      target.withToken(credential.accessToken),
+      credential
+    )
+
+    log.info(
+      `[AccountsStore] switching ${restored.friendlyEndpoint} account to ${restored.login}`
+    )
+
+    this.accounts = sortAccounts([
+      ...this.accounts.filter(a => a.endpoint !== target.endpoint),
+      restored,
+    ])
+    this.parkedAccounts = [
+      ...this.parkedAccounts.filter(a => !isSameLogin(a, target)),
+      ...(current !== undefined ? [current.withToken('')] : []),
+    ]
+    this.save()
+    return restored
+  }
+
+  /**
+   * Forget a parked account and delete its stored credential.
+   *
+   * Returns the account with its last stored access token so the caller can
+   * revoke it, or null if the account was not parked.
+   */
+  public async removeParkedAccount(account: Account): Promise<Account | null> {
+    await this.loadingPromise
+    const target = this.parkedAccounts.find(a => isSameLogin(a, account))
+    if (target === undefined) {
+      return null
+    }
+    this.parkedAccounts = this.parkedAccounts.filter(a => a !== target)
+    this.save()
+
+    const key = getKeyForAccount(target)
+    try {
+      const credential = deserializeAccountCredential(
+        await this.secureStore.getItem(key, target.login)
+      )
+      await this.secureStore.deleteItem(key, target.login)
+      return target.withToken(credential?.accessToken ?? '')
+    } catch (e) {
+      log.error('Unable to remove GitHub credentials from secure storage.', e)
+      this.emitError(
+        new Error('Unable to remove GitHub credentials from secure storage.')
+      )
+      return target
+    }
   }
 
   /** Notify once per account when invalid credentials sign it out. */
@@ -265,6 +384,15 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
   }
 
   private onSignedIn = (account: Account) => {
+    // Signing into another account on the same endpoint parks the current one
+    // instead of signing it out, so it can be switched back to later.
+    const previous = this.accounts.find(
+      a => a.endpoint === account.endpoint && !isSameLogin(a, account)
+    )
+    this.parkedAccounts = [
+      ...this.parkedAccounts.filter(a => !isSameLogin(a, account)),
+      ...(previous !== undefined ? [previous.withToken('')] : []),
+    ]
     this.accounts = sortAccounts([
       ...this.accounts.filter(a => a.endpoint !== account.endpoint),
       account,
@@ -452,6 +580,7 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
 
     this.accounts = sortAccounts([...accountsByEndpoint.values()])
+    this.parkedAccounts = this.loadParkedAccounts()
     // If any account was migrated, make sure to persist the new value
     if (migratedAccounts !== null || removedInvalidAccounts) {
       this.save() // Save already emits an update
@@ -460,11 +589,55 @@ export class AccountsStore extends TypedBaseStore<ReadonlyArray<Account>> {
     }
   }
 
+  /**
+   * Load parked accounts. Their credentials are read when switching to them.
+   *
+   * Stored separately from `users` so older versions of Desktop, which only
+   * know about one account per endpoint, keep working with the same data.
+   */
+  private loadParkedAccounts(): ReadonlyArray<Account> {
+    const raw = this.dataStore.getItem(parkedUsersKey)
+    if (!raw || !raw.length) {
+      return []
+    }
+
+    try {
+      const parsed: ReadonlyArray<IAccount> = JSON.parse(raw)
+      const parked = new Array<Account>()
+      for (const a of parsed) {
+        const account = new Account(
+          a.login,
+          a.endpoint,
+          '',
+          a.emails,
+          a.avatarURL,
+          a.id,
+          a.name,
+          a.plan
+        )
+        if (
+          !this.accounts.some(x => isSameLogin(x, account)) &&
+          !parked.some(x => isSameLogin(x, account))
+        ) {
+          parked.push(account)
+        }
+      }
+      return parked
+    } catch (e) {
+      log.error('Unable to load parked accounts', e)
+      return []
+    }
+  }
+
   private save() {
     const usersWithoutTokens = this.accounts.map(account =>
       account.withToken('')
     )
     this.dataStore.setItem('users', JSON.stringify(usersWithoutTokens))
+    this.dataStore.setItem(
+      parkedUsersKey,
+      JSON.stringify(this.parkedAccounts.map(a => a.withToken('')))
+    )
 
     this.emitUpdate(this.accounts)
   }

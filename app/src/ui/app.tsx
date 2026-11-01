@@ -1737,6 +1737,9 @@ export class App extends React.Component<IAppProps, IAppState> {
             initialSelectedTab={popup.initialSelectedTab}
             dispatcher={this.props.dispatcher}
             accounts={this.state.accounts}
+            parkedAccounts={this.state.parkedAccounts}
+            syncWithGitHubCLI={this.state.syncWithGitHubCLI}
+            desktopProfile={this.state.desktopProfile}
             confirmRepositoryRemoval={
               this.state.askForConfirmationOnRepositoryRemoval
             }
