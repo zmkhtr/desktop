@@ -1,4 +1,5 @@
 import { Repository } from '../../models/repository'
+import { Account } from '../../models/account'
 import { IMenuItem } from '../../lib/menu-item'
 import { Repositoryish } from './group-repositories'
 import { writeClipboardText } from '../main-process-proxy'
@@ -22,6 +23,9 @@ interface IRepositoryListItemContextMenuConfig {
   onRemoveRepositoryAlias: (repository: Repository) => void
   onCreateWorktree?: (repository: Repository) => void
   onShowWorktrees?: (repository: Repository) => void
+  /** Signed-in accounts the repository can be moved to. */
+  moveToAccounts?: ReadonlyArray<Account>
+  onMoveToAccount?: (repository: Repository, account: Account) => void
 }
 
 export const generateRepositoryListContextMenu = (
@@ -41,6 +45,7 @@ export const generateRepositoryListContextMenu = (
   const items: ReadonlyArray<IMenuItem> = [
     ...buildAliasMenuItems(config),
     ...buildWorktreeMenuItems(config),
+    ...buildMoveToAccountMenuItems(config),
     {
       label: __DARWIN__ ? 'Copy Repo Name' : 'Copy repo name',
       action: () => writeClipboardText(repository.name),
@@ -105,6 +110,31 @@ const buildAliasMenuItems = (
   }
 
   return items
+}
+
+const buildMoveToAccountMenuItems = (
+  config: IRepositoryListItemContextMenuConfig
+): ReadonlyArray<IMenuItem> => {
+  const { repository, moveToAccounts, onMoveToAccount } = config
+
+  if (
+    !(repository instanceof Repository) ||
+    moveToAccounts === undefined ||
+    moveToAccounts.length === 0 ||
+    onMoveToAccount === undefined
+  ) {
+    return []
+  }
+
+  return [
+    {
+      label: __DARWIN__ ? 'Move to Account' : 'Move to account',
+      submenu: moveToAccounts.map(account => ({
+        label: `@${account.login} (${account.friendlyEndpoint})`,
+        action: () => onMoveToAccount(repository, account),
+      })),
+    },
+  ]
 }
 
 const buildWorktreeMenuItems = (

@@ -1273,6 +1273,11 @@ export class Dispatcher {
     return this.appStore._switchAccount(account)
   }
 
+  /** Move a repository to another signed-in account. */
+  public moveRepositoryToAccount(repository: Repository, account: Account) {
+    this.appStore._moveRepositoryToAccount(repository, account)
+  }
+
   /** Sign out of an account which isn't currently active. */
   public removeParkedAccount(account: Account): Promise<void> {
     return this.appStore._removeParkedAccount(account)

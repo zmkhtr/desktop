@@ -98,6 +98,13 @@ export interface IAppState {
    * without signing in again.
    */
   readonly parkedAccounts: ReadonlyArray<Account>
+  /**
+   * The repositories (and cloning repositories) belonging to the active
+   * accounts, which are the ones listed. See `repository-accounts`.
+   */
+  readonly visibleRepositories: ReadonlyArray<Repository | CloningRepository>
+  /** The account each repository belongs to, by repository id. */
+  readonly repositoryOwners: ReadonlyMap<number, string>
   /** Whether the active accounts are kept in sync with the GitHub CLI. */
   readonly syncWithGitHubCLI: boolean
   /** The name of the profile this instance runs as, null for the default. */

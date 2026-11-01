@@ -301,6 +301,15 @@ import {
   switchGitHubCLIAccount,
 } from '../gh-cli'
 import { getDesktopProfile } from '../desktop-profile'
+import {
+  RepositoryOwners,
+  filterRepositoriesForAccounts,
+  getRepositoryOwnerKey,
+  parseRepositoryOwners,
+  repositoryOwnersKey,
+  serializeRepositoryOwners,
+  updateRepositoryOwners,
+} from '../repository-accounts'
 import { ExternalEditorError, suggestedExternalEditor } from '../editors/shared'
 import {
   CopilotAppError,
@@ -612,6 +621,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
   private parkedAccounts: ReadonlyArray<Account> = new Array<Account>()
   private syncWithGitHubCLI = false
   private gitHubCLIWatcher: GitHubCLIHostsWatcher | null = null
+  /** The account each repository belongs to. See `repository-accounts`. */
+  private repositoryOwners: RepositoryOwners = new Map()
   private repositories: ReadonlyArray<Repository> = new Array<Repository>()
   private recentRepositories: ReadonlyArray<number> = new Array<number>()
 
@@ -1043,6 +1054,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.accountsStore.onDidUpdate(accounts => {
       this.accounts = accounts
       this.parkedAccounts = this.accountsStore.getCachedParkedAccounts()
+      this.updateRepositoryOwners()
       this.statsStore.setUsesShortLivedToken(
         accounts.some(account => this.accountsStore.isRefreshable(account))
       )
@@ -1056,6 +1068,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
       updateAccounts(endpointTokens)
 
+      this.updateRepositorySelectionAfterRepositoriesChanged()
       this.refreshSelectedRepositoryAfterAccountChange()
 
       this.emitUpdate()
@@ -1072,6 +1085,7 @@ export class AppStore extends TypedBaseStore<IAppState> {
 
     this.repositoriesStore.onDidUpdate(updateRepositories => {
       this.repositories = updateRepositories
+      this.updateRepositoryOwners()
       this.updateRepositorySelectionAfterRepositoriesChanged()
       this.emitUpdate()
     })
@@ -1285,6 +1299,8 @@ export class AppStore extends TypedBaseStore<IAppState> {
     return {
       accounts: this.accounts,
       parkedAccounts: this.parkedAccounts,
+      visibleRepositories: this.getVisibleRepositories(),
+      repositoryOwners: this.repositoryOwners,
       syncWithGitHubCLI: this.syncWithGitHubCLI,
       desktopProfile: getDesktopProfile(),
       repositories,
@@ -2457,6 +2473,10 @@ export class AppStore extends TypedBaseStore<IAppState> {
     this.accounts = accounts
     this.parkedAccounts = parkedAccounts
     this.repositories = repositories
+    this.repositoryOwners = parseRepositoryOwners(
+      localStorage.getItem(repositoryOwnersKey)
+    )
+    this.updateRepositoryOwners()
     this._setSyncWithGitHubCLI(getBoolean(syncWithGitHubCLIKey, false))
     this.statsStore.setUsesShortLivedToken(
       accounts.some(account => this.accountsStore.isRefreshable(account))
@@ -2959,12 +2979,14 @@ export class AppStore extends TypedBaseStore<IAppState> {
   }
 
   private updateRepositorySelectionAfterRepositoriesChanged() {
+    // Only repositories belonging to the active accounts can be selected.
+    const repositories = this.getVisibleRepositories()
     const selectedRepository = this.selectedRepository
     let newSelectedRepository: Repository | CloningRepository | null =
       this.selectedRepository
     if (selectedRepository) {
       const r =
-        this.repositories.find(
+        repositories.find(
           r =>
             r.constructor === selectedRepository.constructor &&
             r.id === selectedRepository.id
@@ -2973,15 +2995,15 @@ export class AppStore extends TypedBaseStore<IAppState> {
       newSelectedRepository = r
     }
 
-    if (newSelectedRepository === null && this.repositories.length > 0) {
+    if (newSelectedRepository === null && repositories.length > 0) {
       const lastSelectedID = getNumber(LastSelectedRepositoryIDKey, 0)
       if (lastSelectedID > 0) {
         newSelectedRepository =
-          this.repositories.find(r => r.id === lastSelectedID) || null
+          repositories.find(r => r.id === lastSelectedID) || null
       }
 
       if (!newSelectedRepository) {
-        newSelectedRepository = this.repositories[0]
+        newSelectedRepository = repositories[0]
       }
     }
 
@@ -8214,6 +8236,50 @@ export class AppStore extends TypedBaseStore<IAppState> {
     if (current?.token) {
       await deleteToken(current)
     }
+  }
+
+  /** The repositories belonging to the active accounts. */
+  private getVisibleRepositories() {
+    return filterRepositoriesForAccounts(
+      this.repositories,
+      this.repositoryOwners,
+      this.parkedAccounts
+    )
+  }
+
+  /** Give new repositories an owner and persist any change. */
+  private updateRepositoryOwners() {
+    const updated = updateRepositoryOwners(
+      this.repositories.filter((r): r is Repository => r instanceof Repository),
+      this.repositoryOwners,
+      this.accounts
+    )
+    if (updated !== null) {
+      this.setRepositoryOwners(updated)
+    }
+  }
+
+  private setRepositoryOwners(owners: RepositoryOwners) {
+    this.repositoryOwners = owners
+    localStorage.setItem(repositoryOwnersKey, serializeRepositoryOwners(owners))
+  }
+
+  /**
+   * Move a repository to another signed-in account, so it's listed while that
+   * account is active.
+   *
+   * This shouldn't be called directly. See `Dispatcher`.
+   */
+  public _moveRepositoryToAccount(repository: Repository, account: Account) {
+    log.info(`[AppStore] moving ${repository.name} to account ${account.login}`)
+    this.setRepositoryOwners(
+      new Map(this.repositoryOwners).set(
+        repository.id,
+        getRepositoryOwnerKey(account)
+      )
+    )
+    this.updateRepositorySelectionAfterRepositoriesChanged()
+    this.emitUpdate()
   }
 
   /**
