@@ -56,6 +56,7 @@ import {
   BranchDropdown,
   WorktreeDropdown,
   RevertProgress,
+  AccountSwitcher,
 } from './toolbar'
 import { iconForRepository, OcticonSymbol } from './octicons'
 import * as octicons from './octicons/octicons.generated'
@@ -3929,6 +3930,31 @@ export class App extends React.Component<IAppProps, IAppState> {
     this.props.dispatcher.clearBanner()
   }
 
+  private renderAccountSwitcher() {
+    return (
+      <AccountSwitcher
+        accounts={this.state.accounts}
+        parkedAccounts={this.state.parkedAccounts}
+        onSwitchAccount={this.onSwitchAccount}
+        onManageAccounts={this.onManageAccounts}
+      />
+    )
+  }
+
+  private onSwitchAccount = (account: Account) => {
+    this.props.dispatcher.switchAccount(account).catch(e => {
+      log.error(`Unable to switch to account ${account.login}`, e)
+      this.props.dispatcher.postError(e)
+    })
+  }
+
+  private onManageAccounts = () => {
+    this.props.dispatcher.showPopup({
+      type: PopupType.Preferences,
+      initialSelectedTab: PreferencesTab.Accounts,
+    })
+  }
+
   private renderToolbar() {
     /**
      * No toolbar if we're in the blank slate view.
@@ -3941,6 +3967,7 @@ export class App extends React.Component<IAppProps, IAppState> {
 
     return (
       <Toolbar id="desktop-app-toolbar">
+        {this.renderAccountSwitcher()}
         <div className="sidebar-section" style={{ width }}>
           {this.renderRepositoryToolbarButton()}
         </div>
